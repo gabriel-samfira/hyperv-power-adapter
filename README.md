@@ -11,6 +11,8 @@ To enable WinRM over SSL on the hypervisor, simply download SetupWinRMAccessSelf
 powershell.exe -ExecutionPolicy RemoteSigned SetupWinRMAccessSelfSigned.ps1
 ```
 
+Original SetupWinRMAccessSelfSigned.ps1 taken from: https://github.com/cloudbase/unattended-setup-scripts/blob/master/SetupWinRMAccessSelfSigned.ps1
+
 Please note that this script will:
 
   * Download Visual C++ redistreibutable package and install it
