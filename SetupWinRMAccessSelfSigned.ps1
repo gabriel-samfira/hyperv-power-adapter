@@ -29,10 +29,10 @@ function InstallVCRedist2008() {
 
 function InstallOpenSSL() {
     if (!(Test-Path $opensslPath)) {
-        $filename = "Win32OpenSSL_Light-1_0_1m.exe"
+        $filename = "Win32OpenSSL_Light-1_0_2d.exe"
         Start-BitsTransfer -Source "http://slproweb.com/download/$filename" -Destination $filename
 
-        VerifyHash $filename "77079168D79FBECE3B44B8E88DF3B6A3B48CF429"
+        VerifyHash $filename "FDAB5B09B7AF44D41CA02DB39994B52A39C9588A"
 
         Start-Process -Wait -FilePath $filename -ArgumentList "/silent /verysilent /sp- /suppressmsgboxes"
         del $filename
@@ -99,6 +99,13 @@ function CreateWinRMHttpsFirewallRule() {
     if ($LastExitCode) { throw "Failed to setup WinRM HTTPS firewall rules" }
 }
 
+function SetNetConnectionProfiles() {
+    foreach($cp in Get-NetConnectionProfile | ? {$_.NetworkCategory -eq "Public"}) {
+        $cp.NetworkCategory = "Private"
+        $cp | Set-NetConnectionProfile
+    }
+}
+
 $certFilePfx = "server_cert.p12"
 $pfxPassword = "Passw0rd"
 
@@ -114,6 +121,8 @@ GenerateSelfSignedCertificate $certFilePfx $pfxPassword
 $certThumbprint = ImportCertificate $certFilePfx $pfxPassword
 
 del $certFilePfx
+
+SetNetConnectionProfiles
 
 RemoveExistingWinRMHttpsListener
 
