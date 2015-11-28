@@ -237,14 +237,13 @@ diff -uNr a/usr/lib/python2.7/dist-packages/provisioningserver/power_schema.py b
          'description': 'Sentry Switch CDU',
          'fields': [
 diff -uNr a/usr/lib/python2.7/dist-packages/provisioningserver/rpc/power.py b/usr/lib/python2.7/dist-packages/provisioningserver/rpc/power.py
---- a/usr/lib/python2.7/dist-packages/provisioningserver/rpc/power.py	2015-01-30 13:57:10.000000000 +0200
-+++ b/usr/lib/python2.7/dist-packages/provisioningserver/rpc/power.py	2015-03-21 13:42:23.374497600 +0200
-@@ -61,7 +61,7 @@
- # state for these power types.
- # This is meant to be temporary until all the power types support
- # querying the power state of a node.
--QUERY_POWER_TYPES = ['amt', 'ipmi', 'mscm', 'sm15k', 'ucsm', 'virsh']
-+QUERY_POWER_TYPES = ['amt', 'ipmi', 'mscm', 'sm15k', 'ucsm', 'virsh', 'hyperv']
- 
- 
- # Timeout for change_power_state(). We set it to 2 minutes by default,
+--- a/usr/lib/python2.7/dist-packages/provisioningserver/rpc/power.py  2015-11-28 19:43:34.609105900 +0200
++++ b/usr/lib/python2.7/dist-packages/provisioningserver/rpc/power.py  2015-11-28 18:36:50.770076700 +0200
+@@ -75,6 +75,7 @@
+     'ucsm',
+     'virsh',
+     'vmware',
++    'hyperv',
+ ]
+
+
