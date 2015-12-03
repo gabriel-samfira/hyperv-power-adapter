@@ -4,7 +4,7 @@ diff -uNr a/etc/maas/templates/power/hyperv.template b/etc/maas/templates/power/
 @@ -0,0 +1,40 @@
 +# -*- mode: shell-script -*-
 +#
-+# Control virtual system's "power" through vmware.
++# Control virtual system's "power" through Hyper-V.
 +#
 +
 +power_change={{power_change}}
@@ -23,13 +23,13 @@ diff -uNr a/etc/maas/templates/power/hyperv.template b/etc/maas/templates/power/
 +    fi
 +}
 +
-+issue_vmware_command() {
++issue_hyperv_command() {
 +    ${wsmancmd} -H $power_address -s -a basic -u $power_user -p $power_pass "powershell.exe -Command $1"
 +}
 +
 +if [ ${power_change} = "query" ]
 +then
-+    STATUS=$(issue_vmware_command "(Get-VM ${vm_name}).State")
++    STATUS=$(issue_hyperv_command "(Get-VM ${vm_name}).State")
 +    [ -z "$STATUS" ] && echo "Failed to get power state for ${vm_name}" && exit 1
 +    case "$STATUS" in
 +        Off*)
@@ -39,7 +39,7 @@ diff -uNr a/etc/maas/templates/power/hyperv.template b/etc/maas/templates/power/
 +    esac
 +else
 +    COMMAND=$(formulate_power_command)
-+    issue_vmware_command "$COMMAND"
++    issue_hyperv_command "$COMMAND"
 +fi
 +
 diff -uNr a/etc/maas/templates/power/wsmancmd.py b/etc/maas/templates/power/wsmancmd.py
