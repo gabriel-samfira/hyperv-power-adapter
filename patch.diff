@@ -19,7 +19,7 @@ diff -uNr a/etc/maas/templates/power/hyperv.template b/etc/maas/templates/power/
 +    then
 +        echo '(Set-VMFirmware '${vm_name}' -BootOrder (Get-VMNetworkAdapter '${vm_name}')); (Start-VM '${vm_name}')'
 +    else
-+        echo '(Stop-VM -Force -Confirm:$false '${vm_name}')'
++        echo '(Stop-VM -TurnOff -Force -Confirm:$false '${vm_name}')'
 +    fi
 +}
 +
