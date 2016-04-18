@@ -1,0 +1,258 @@
+diff -uNr /usr/lib/python2.7/dist-packages/provisioningserver/drivers/hardware/hyperv.py provisioningserver/drivers/hardware/hyperv.py
+--- /usr/lib/python2.7/dist-packages/provisioningserver/drivers/hardware/hyperv.py	1969-12-31 16:00:00.000000000 -0800
++++ provisioningserver/drivers/hardware/hyperv.py	2016-04-15 11:09:44.000000000 -0700
+@@ -0,0 +1,135 @@
++# Copyright 2016 Cloudbase Solutions Srl
++# All Rights Reserved.
++#
++#    Licensed under the Apache License, Version 2.0 (the "License"); you may
++#    not use this file except in compliance with the License. You may obtain
++#    a copy of the License at
++#
++#         http://www.apache.org/licenses/LICENSE-2.0
++#
++#    Unless required by applicable law or agreed to in writing, software
++#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++#    License for the specific language governing permissions and limitations
++#    under the License.
++
++
++from winrm import protocol
++
++
++AUTH_BASIC = "basic"
++AUTH_KERBEROS = "kerberos"
++AUTH_CERTIFICATE = "certificate"
++
++DEFAULT_PORT_HTTP = 5985
++DEFAULT_PORT_HTTPS = 5986
++
++CODEPAGE_UTF8 = 65001
++
++AUTH_TRANSPORT_MAP = {
++    AUTH_BASIC: 'plaintext',
++    AUTH_KERBEROS: 'kerberos',
++    AUTH_CERTIFICATE: 'ssl'
++}
++
++
++VM_RUNNING = "Running"
++VM_PAUSED = "Paused"
++VM_STOPPED = "Off"
++VM_STARTING = "Starting"
++VM_STOPPING = "Stopping"
++
++VM_STATE_TO_POWER_STATE = {
++    VM_RUNNING: "on",
++    VM_STARTING: "on",
++    VM_STOPPING: "on",
++    VM_STOPPED: "off",
++    VM_PAUSED: "off",
++}
++
++
++class HypervCmdError(Exception):
++    """Failed to run command on remote Hyper-V node"""
++
++
++class WinRM(object):
++
++    def __init__(self, power_address, username, password, use_ssl=True):
++        self.hostname = power_address
++        self.use_ssl = use_ssl
++        self.protocol = self._protocol(username, password)
++
++    def _protocol(self, username, password):
++        protocol.Protocol.DEFAULT_TIMEOUT = "PT3600S"
++        p = protocol.Protocol(endpoint=self._url,
++                              transport=AUTH_TRANSPORT_MAP[AUTH_BASIC],
++                              username=username,
++                              password=password)
++        return p
++
++    def _run_command(self, cmd):
++        if type(cmd) is not list:
++            raise ValueError("command must be a list")
++        shell_id = self.protocol.open_shell(codepage=CODEPAGE_UTF8)
++        command_id = self.protocol.run_command(shell_id, cmd[0], cmd[1:])
++        std_out, std_err, status_code = self.protocol.get_command_output(shell_id, command_id)
++
++        self.protocol.cleanup_command(shell_id, command_id)
++        self.protocol.close_shell(shell_id)
++        if status_code:
++            raise HypervCmdError("Failed to run command: %s. Error message: %s" % (" ".join(cmd), std_err))
++        return std_out
++
++    def run_command(self, command):
++        return self._run_command(command)
++
++    def run_powershell_command(self, command):
++        pscommand = ["powershell.exe", "-ExecutionPolicy", "RemoteSigned",
++                     "-NonInteractive", "-Command"] + command
++        return self._run_command(pscommand)
++
++    def get_vm_state(self, machine):
++        state = self.run_powershell_command(['(Get-VM %s -ErrorAction SilentlyContinue).State' % machine, ])
++        if not state:
++            raise HypervCmdError("Machine %s was not found on hypervisor %s" % (machine, self.hostname))
++        return state.strip('\r\n')
++
++    @property
++    def _url(self):
++        proto = "http"
++        port = DEFAULT_PORT_HTTP
++        if self.use_ssl:
++            proto = "https"
++            port = DEFAULT_PORT_HTTPS
++        return "%s://%s:%s/wsman" % (proto, self.hostname, port)
++
++    def status(self, vm):
++        url = self._url
++
++
++def power_state_hyperv(poweraddr, machine, username, password):
++    """Return the power state for the VM using WinRM."""
++
++    conn = WinRM(poweraddr, username, password)
++    state = conn.get_vm_state(machine)
++
++    try:
++        return VM_STATE_TO_POWER_STATE[state]
++    except KeyError:
++        raise HypervCmdError('Unknown state: %s' % state)
++
++
++def power_control_hyperv(poweraddr, machine, power_change, username, password):
++    """Power controls a VM using WinRM."""
++
++    conn = WinRM(poweraddr, username, password)
++    state = conn.get_vm_state(machine)
++
++    if state == VM_STOPPED:
++        if power_change == 'on':
++            startCmd = '(Set-VMFirmware %s -BootOrder (Get-VMNetworkAdapter %s)); (Start-VM %s)' % (machine, machine, machine)
++            conn.run_powershell_command([startCmd, ])
++    elif state == VM_RUNNING:
++        if power_change == 'off':
++            conn.run_powershell_command(['Stop-VM %s -Force' % machine,])
++
+diff -uNr /usr/lib/python2.7/dist-packages/provisioningserver/drivers/power/hyperv.py provisioningserver/drivers/power/hyperv.py
+--- /usr/lib/python2.7/dist-packages/provisioningserver/drivers/power/hyperv.py	1969-12-31 16:00:00.000000000 -0800
++++ provisioningserver/drivers/power/hyperv.py	2016-04-15 08:25:50.000000000 -0700
+@@ -0,0 +1,65 @@
++"""Hyper-V Power Driver."""
++
++from __future__ import (
++    absolute_import,
++    print_function,
++    unicode_literals,
++    )
++
++str = None
++
++__metaclass__ = type
++__all__ = []
++
++import importlib
++
++from provisioningserver.drivers.hardware.hyperv import (
++    power_control_hyperv,
++    power_state_hyperv,
++)
++from provisioningserver.drivers.power import PowerDriver
++
++REQUIRED_PACKAGES = [["winrm", "pywinrm"], ]
++
++
++def extract_hyperv_parameters(context):
++    poweraddr = context.get('power_address')
++    machine = context.get('power_id')
++    username = context.get('power_user')
++    password = context.get('power_pass')
++    return poweraddr, machine, username, password
++
++
++class HypervPowerDriver(PowerDriver):
++
++    name = 'hyperv'
++    description = "Hyper-V Power Driver."
++    settings = []
++
++    def detect_missing_packages(self):
++        missing_packages = set()
++        for module, package in REQUIRED_PACKAGES:
++            try:
++                importlib.import_module(module)
++            except ImportError:
++                missing_packages.add(package)
++        return list(missing_packages)
++
++    def power_on(self, system_id, context):
++        """Power on Hyper-V node."""
++        power_change = 'on'
++        poweraddr, machine, username, password = extract_hyperv_parameters(context)
++        power_control_hyperv(
++            poweraddr, machine, power_change, username, password)
++
++    def power_off(self, system_id, context):
++        """Power off Hyper-V node."""
++        power_change = 'off'
++        poweraddr, machine, username, password = extract_hyperv_parameters(context)
++        power_control_hyperv(
++            poweraddr, machine, power_change, username, password)
++
++    def power_query(self, system_id, context):
++        """Power query Hyper-V node."""
++        poweraddr, machine, username, password = extract_hyperv_parameters(context)
++        return power_state_hyperv(poweraddr, machine, username, password)
+diff -uNr /usr/lib/python2.7/dist-packages/provisioningserver/drivers/power/__init__.py provisioningserver/drivers/power/__init__.py
+--- /usr/lib/python2.7/dist-packages/provisioningserver/drivers/power/__init__.py	2016-03-01 11:42:43.000000000 -0800
++++ provisioningserver/drivers/power/__init__.py	2016-04-15 08:23:58.000000000 -0700
+@@ -333,6 +333,7 @@
+ from provisioningserver.drivers.power.ucsm import UCSMPowerDriver
+ from provisioningserver.drivers.power.virsh import VirshPowerDriver
+ from provisioningserver.drivers.power.vmware import VMwarePowerDriver
++from provisioningserver.drivers.power.hyperv import HypervPowerDriver
+ 
+ registered_power_drivers = [
+     APCPowerDriver(),
+@@ -346,6 +347,7 @@
+     UCSMPowerDriver(),
+     VirshPowerDriver(),
+     VMwarePowerDriver(),
++    HypervPowerDriver(),
+ ]
+ for driver in registered_power_drivers:
+     PowerDriverRegistry.register_item(driver.name, driver)
+diff -uNr /usr/lib/python2.7/dist-packages/provisioningserver/power/__init__.py provisioningserver/power/__init__.py
+--- /usr/lib/python2.7/dist-packages/provisioningserver/power/__init__.py	2016-03-01 11:42:43.000000000 -0800
++++ provisioningserver/power/__init__.py	2016-04-15 05:02:56.000000000 -0700
+@@ -38,6 +38,7 @@
+     'ucsm',
+     'virsh',
+     'vmware',
++    'hyperv',
+ ]
+ 
+ 
+diff -uNr /usr/lib/python2.7/dist-packages/provisioningserver/power/schema.py provisioningserver/power/schema.py
+--- /usr/lib/python2.7/dist-packages/provisioningserver/power/schema.py	2016-03-01 11:42:43.000000000 -0800
++++ provisioningserver/power/schema.py	2016-04-15 08:43:29.000000000 -0700
+@@ -180,6 +180,16 @@
+         ],
+     },
+     {
++        'name': 'hyperv',
++        'description': 'Hyper-V server (virtual systems)',
++        'fields': [
++            make_json_field('power_address', "Power address"),
++            make_json_field('power_id', "Power ID"),
++            make_json_field('power_user', "Power user"),
++            make_json_field('power_pass', "Power password", field_type='password'),
++        ],
++    },
++    {
+         'name': 'vmware',
+         'description': 'VMWare',
+         'fields': [
