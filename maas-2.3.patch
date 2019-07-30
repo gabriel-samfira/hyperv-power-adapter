@@ -1,0 +1,266 @@
+diff -ruN provisioningserver_orig/drivers/hardware/hyperv.py provisioningserver/drivers/hardware/hyperv.py
+--- provisioningserver_orig/drivers/hardware/hyperv.py	1970-01-01 02:00:00.000000000 +0200
++++ provisioningserver/drivers/hardware/hyperv.py	2018-07-26 23:14:05.725233601 +0300
+@@ -0,0 +1,149 @@
++# Copyright 2016 Cloudbase Solutions Srl
++# All Rights Reserved.
++#
++#    Licensed under the Apache License, Version 2.0 (the "License"); you may
++#    not use this file except in compliance with the License. You may obtain
++#    a copy of the License at
++#
++#         http://www.apache.org/licenses/LICENSE-2.0
++#
++#    Unless required by applicable law or agreed to in writing, software
++#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++#    License for the specific language governing permissions and limitations
++#    under the License.
++
++import sys
++
++from winrm import protocol
++from provisioningserver.logger import get_maas_logger
++maaslog = get_maas_logger("drivers.power.hyperv")
++
++AUTH_BASIC = "basic"
++AUTH_KERBEROS = "kerberos"
++AUTH_CERTIFICATE = "certificate"
++
++DEFAULT_PORT_HTTP = 5985
++DEFAULT_PORT_HTTPS = 5986
++
++CODEPAGE_UTF8 = 65001
++
++AUTH_TRANSPORT_MAP = {
++    AUTH_BASIC: 'plaintext',
++    AUTH_KERBEROS: 'kerberos',
++    AUTH_CERTIFICATE: 'ssl'
++}
++
++
++VM_RUNNING = "Running"
++VM_PAUSED = "Paused"
++VM_STOPPED = "Off"
++VM_STARTING = "Starting"
++VM_STOPPING = "Stopping"
++
++VM_STATE_TO_POWER_STATE = {
++    VM_RUNNING: "on",
++    VM_STARTING: "on",
++    VM_STOPPING: "on",
++    VM_STOPPED: "off",
++    VM_PAUSED: "off",
++}
++
++
++class HypervCmdError(Exception):
++    """Failed to run command on remote Hyper-V node"""
++
++
++class WinRM(object):
++
++    def __init__(self, power_address, username, password, use_ssl=True):
++        self.hostname = power_address
++        self.use_ssl = use_ssl
++        maaslog.warning("HV init")
++
++        self.protocol = self._protocol(username, password)
++
++    def _protocol(self, username, password):
++        protocol.Protocol.DEFAULT_TIMEOUT = "PT3600S"
++        p = protocol.Protocol(endpoint=self._url,
++                              transport=AUTH_TRANSPORT_MAP[AUTH_BASIC],
++                              username=username,
++                              password=password,
++                              server_cert_validation='ignore')
++        return p
++
++    def _run_command(self, cmd):
++        if type(cmd) is not list:
++            raise ValueError("command must be a list")
++        maaslog.warning("HV run cmd: %s", cmd)
++        try:
++            shell_id = self.protocol.open_shell(codepage=CODEPAGE_UTF8)
++        except:
++            maaslog.warning("HV crapat: %s", sys.exc_info()[0])
++        command_id = self.protocol.run_command(shell_id, cmd[0], cmd[1:])
++        std_out, std_err, status_code = self.protocol.get_command_output(shell_id, command_id)
++        self.protocol.cleanup_command(shell_id, command_id)
++
++        self.protocol.close_shell(shell_id)
++
++        if status_code:  
++            raise HypervCmdError("Failed to run command: %s. Error message: %s" % (" ".join(cmd), std_err))
++        return std_out
++
++    def run_command(self, command):
++        return self._run_command(command)
++
++    def run_powershell_command(self, command):
++        pscommand = ["powershell.exe", "-ExecutionPolicy", "RemoteSigned",
++                     "-NonInteractive", "-Command"] + command
++        return self._run_command(pscommand)
++
++    def get_vm_state(self, machine):
++        state = self.run_powershell_command(['(Get-VM %s -ErrorAction SilentlyContinue).State' % machine, ])
++        maaslog.warning(state.strip())
++
++        if not state:
++            raise HypervCmdError("Machine %s was not found on hypervisor %s" % (machine, self.hostname))
++        return state.strip().decode("utf-8")
++
++    @property
++    def _url(self):
++        proto = "http"
++        port = DEFAULT_PORT_HTTP
++        if self.use_ssl:
++            proto = "https"
++            port = DEFAULT_PORT_HTTPS
++        return "%s://%s:%s/wsman" % (proto, self.hostname, port)
++
++    def status(self, vm):
++        url = self._url
++
++
++def power_state_hyperv(poweraddr, machine, username, password):
++    """Return the power state for the VM using WinRM."""
++
++    conn = WinRM(poweraddr, username, password)
++    state = conn.get_vm_state(machine)
++    maaslog.warning("hv: %s", state)
++    maaslog.warning(VM_STATE_TO_POWER_STATE)
++    try:
++        return VM_STATE_TO_POWER_STATE[state]
++    except KeyError:
++        raise HypervCmdError('Unknown state: %s' % state)
++
++
++def power_control_hyperv(poweraddr, machine, power_change, username, password):
++    """Power controls a VM using WinRM."""
++
++    conn = WinRM(poweraddr, username, password)
++    state = conn.get_vm_state(machine)
++    maaslog.warning("HV status: %s", state)
++
++    if state == VM_STOPPED:
++        if power_change == 'on':
++            startCmd = '(Set-VMFirmware %s -BootOrder (Get-VMNetworkAdapter %s)); (Start-VM %s)' % (machine, machine, machine)
++            conn.run_powershell_command([startCmd, ])
++    elif state == VM_RUNNING:
++        if power_change == 'off':
++            conn.run_powershell_command(['Stop-VM %s -Force' % machine,])
++
+diff -ruN provisioningserver_orig/drivers/power/hyperv.py provisioningserver/drivers/power/hyperv.py
+--- provisioningserver_orig/drivers/power/hyperv.py	1970-01-01 02:00:00.000000000 +0200
++++ provisioningserver/drivers/power/hyperv.py	2018-08-08 17:01:01.061191614 +0300
+@@ -0,0 +1,89 @@
++"""Hyper-V Power Driver."""
++
++from __future__ import (
++    absolute_import,
++    print_function,
++    unicode_literals,
++    )
++
++str = None
++
++__metaclass__ = type
++__all__ = []
++
++from provisioningserver.drivers import (
++    IP_EXTRACTOR_PATTERNS,
++    make_ip_extractor,
++    make_setting_field,
++    SETTING_SCOPE,
++)
++
++import importlib
++
++from provisioningserver.drivers.hardware.hyperv import (
++    power_control_hyperv,
++    power_state_hyperv,
++)
++from provisioningserver.drivers.power import PowerDriver
++
++from provisioningserver.logger import get_maas_logger
++maaslog = get_maas_logger("drivers.power.hyperv")
++
++
++REQUIRED_PACKAGES = [["winrm", "pywinrm"], ]
++
++
++def extract_hyperv_parameters(context):
++    poweraddr = context.get('power_address')
++    machine = context.get('power_id')
++    username = context.get('power_user')
++    password = context.get('power_pass')
++    return poweraddr, machine, username, password
++
++
++class HypervPowerDriver(PowerDriver):
++
++    name = 'hyperv'
++    description = "Hyper-V Power Driver."
++    settings = [
++        make_setting_field(
++            'power_id', "VM Name", required=True,
++            scope=SETTING_SCOPE.NODE),
++        make_setting_field('power_address', "Hyper-V hostname", required=True),
++        make_setting_field('power_user', "Hyper-V username", required=True),
++        make_setting_field(
++            'power_pass', "Hyper-V password", field_type='password',
++            required=True),
++    ]
++    ip_extractor = make_ip_extractor('power_address')
++
++    def detect_missing_packages(self):
++        missing_packages = set()
++        for module, package in REQUIRED_PACKAGES:
++            try:
++                importlib.import_module(module)
++            except ImportError:
++                missing_packages.add(package)
++        return list(missing_packages)
++
++    def power_on(self, system_id, context):
++        """Power on Hyper-V node."""
++        power_change = 'on'
++        poweraddr, machine, username, password = extract_hyperv_parameters(context)
++        power_control_hyperv(
++            poweraddr, machine, power_change, username, password)
++
++    def power_off(self, system_id, context):
++        """Power off Hyper-V node."""
++        power_change = 'off'
++        poweraddr, machine, username, password = extract_hyperv_parameters(context)
++        power_control_hyperv(
++            poweraddr, machine, power_change, username, password)
++
++    def power_query(self, system_id, context):
++        """Power query Hyper-V node."""
++        poweraddr, machine, username, password = extract_hyperv_parameters(context)
++        a = power_state_hyperv(poweraddr, machine, username, password)
++        maaslog.warning("state: %s", a)
++        return a
++
+diff -ruN provisioningserver_orig/drivers/power/registry.py provisioningserver/drivers/power/registry.py
+--- provisioningserver_orig/drivers/power/registry.py	2018-08-02 22:45:02.664633812 +0300
++++ provisioningserver/drivers/power/registry.py	2018-08-08 17:07:06.250840776 +0300
+@@ -27,6 +27,7 @@
+ from provisioningserver.drivers.power.virsh import VirshPowerDriver
+ from provisioningserver.drivers.power.vmware import VMwarePowerDriver
+ from provisioningserver.drivers.power.wedge import WedgePowerDriver
++from provisioningserver.drivers.power.hyperv import HypervPowerDriver
+ from provisioningserver.utils.registry import Registry
+ 
+ 
+@@ -65,6 +66,7 @@
+     UCSMPowerDriver(),
+     VirshPowerDriver(),
+     VMwarePowerDriver(),
++    HypervPowerDriver(),
+     WedgePowerDriver(),
+ ]
+ for driver in power_drivers:
+
